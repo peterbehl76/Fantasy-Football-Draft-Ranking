@@ -1,0 +1,772 @@
+/**
+ * Positional Tier Board styling.
+ *
+ * Own copy of the dark token palette used by the keeper Draft Helper, so the
+ * two tools look like siblings without sharing a stylesheet (this one is
+ * published separately).
+ */
+
+:root {
+  --bg: #0f1216;
+  --panel: #181d24;
+  --panel-2: #1e242d;
+  --border: #2a323d;
+  --text: #e6e9ee;
+  --muted: #8a94a3;
+  --accent: #4fa3ff;
+  --accent-dim: rgba(79, 163, 255, 0.16);
+  --good: #3fb950;
+  --bad: #f05b5b;
+  --meh: #c9a227;
+  --tier-a: #4fa3ff;
+  --tier-b: #3fb950;
+  --tier-c: #c9a227;
+  --tier-d: #f0883e;
+  --tier-e: #f05b5b;
+  --tier-f: #a371f7;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 24px 20px 48px;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+/* Widened from 780px to fit the two movement columns without squeezing the name. */
+.wrap {
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+/* ---------- header ---------- */
+
+header {
+  margin-bottom: 18px;
+}
+
+h1 {
+  margin: 0 0 4px;
+  font-size: 22px;
+  letter-spacing: 0.2px;
+}
+
+.sub {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* ---------- position tabs ---------- */
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin: 18px 0 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  appearance: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  padding: 9px 18px;
+  border-radius: 7px 7px 0 0;
+  cursor: pointer;
+  margin-bottom: -1px;
+}
+
+/* Keep the generic `button:hover` accent border off the tabs - it made a hovered
+   inactive tab read as the active one. */
+.tab:hover:not(.active) {
+  color: var(--text);
+  background: var(--panel);
+  border-color: var(--border);
+}
+
+.tab.active {
+  color: var(--text);
+  background: var(--panel);
+  border-color: var(--border);
+  border-bottom: 1px solid var(--panel);
+}
+
+.tab .tab-count {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 12px;
+  margin-left: 6px;
+}
+
+/* ---------- controls ---------- */
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+}
+
+.controls label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+select,
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+select:hover,
+button:hover {
+  border-color: var(--accent);
+}
+
+button.danger:hover {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.saved {
+  color: var(--good);
+  font-size: 12px;
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+
+.saved.show {
+  opacity: 1;
+}
+
+/* ---------- board ---------- */
+
+.board {
+  position: relative;
+  margin-top: 16px;
+}
+
+/* A tier band header. */
+.brk {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 6px;
+  padding: 6px 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--tier-a);
+  border-radius: 6px;
+}
+
+.brk:first-child {
+  margin-top: 0;
+}
+
+.brk .handle {
+  color: var(--muted);
+}
+
+.brk input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  font-size: 12px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 3px 6px;
+}
+
+.brk input:hover {
+  border-color: var(--border);
+}
+
+.brk input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--bg);
+}
+
+.brk .count {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.brk .del {
+  padding: 2px 8px;
+  line-height: 1.2;
+  color: var(--muted);
+  background: transparent;
+}
+
+.brk .del:hover {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+/* Tier band colors cycle through the palette. */
+.brk.t1 { border-left-color: var(--tier-a); }
+.brk.t2 { border-left-color: var(--tier-b); }
+.brk.t3 { border-left-color: var(--tier-c); }
+.brk.t4 { border-left-color: var(--tier-d); }
+.brk.t5 { border-left-color: var(--tier-e); }
+.brk.t0 { border-left-color: var(--tier-f); }
+
+/* A player row. */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  margin-bottom: 3px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.row:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-dim);
+}
+
+.row .handle,
+.brk .handle {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  cursor: grab;
+  border-radius: 4px;
+  /* Keep touch drags from turning into page scrolls. */
+  touch-action: none;
+  user-select: none;
+}
+
+.row .handle:hover,
+.brk .handle:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+
+.row .idx {
+  flex: none;
+  width: 26px;
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+
+.row .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.row .team {
+  flex: none;
+  width: 38px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* The Fantasy Footballers' positional rank - the heavier half of the blend, so
+   it reads brighter than the Sleeper columns next to it. */
+.row .ffb {
+  flex: none;
+  width: 32px;
+  text-align: right;
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+
+/* Depth-chart slot on his own NFL team. Green for a starter, plain for a clear
+   number two, muted below that. */
+.row .dc {
+  flex: none;
+  width: 44px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.row .dc.one {
+  color: var(--good);
+}
+
+.row .dc.two {
+  color: var(--text);
+}
+
+.row .dc.deep {
+  color: var(--meh);
+}
+
+.row .dc.none {
+  color: var(--border);
+  font-weight: 400;
+}
+
+.row.head .dc {
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 11px;
+}
+
+/* Sleeper ADP and the round it implies - reference only, so both are dimmer than
+   the FFB rank that actually drives the order. */
+.row .adp {
+  flex: none;
+  width: 46px;
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+
+.row .rd {
+  flex: none;
+  width: 26px;
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+
+/* ---------- column header ---------- */
+
+.row.head {
+  background: transparent;
+  border-color: transparent;
+  margin-top: 16px;
+  margin-bottom: 0;
+  padding-bottom: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+}
+
+.row.head .name {
+  font-weight: 700;
+}
+
+.row.head .ffb {
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 11px;
+}
+
+/* The header labels explain the columns, so give them a hint of interactivity. */
+.row.head span[title] {
+  cursor: help;
+}
+
+/* ---------- movement since the last refresh ---------- */
+
+/* Sits immediately right of the column it measures, so the pair reads as one
+   thing: the value, then what it did. */
+.row .dlt {
+  flex: none;
+  width: 44px;
+  text-align: right;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Lower is better in both units, so a fall in the number is a rise for the player. */
+.row .dlt.up {
+  color: var(--good);
+}
+
+.row .dlt.down {
+  color: var(--bad);
+}
+
+/* Under the threshold, or no baseline at all. Deliberately faint - the absence of a
+   real move should not compete with the moves that did happen. */
+.row .dlt.flat,
+.row .dlt.none {
+  color: var(--border);
+}
+
+.row.head .dlt {
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+}
+
+.row .drift {
+  flex: none;
+  width: 52px;
+  text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.row .drift.up {
+  color: var(--good);
+}
+
+.row .drift.down {
+  color: var(--bad);
+}
+
+.row .drift.flat {
+  color: var(--border);
+}
+
+.badge {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--meh);
+  border: 1px solid var(--meh);
+}
+
+/* ---------- drag affordances ---------- */
+
+/* The gap between entries; hovering reveals an insert-tier-break button. */
+.gap {
+  position: relative;
+  height: 10px;
+  margin: -5px 0;
+  z-index: 2;
+}
+
+.gap button {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 0 9px;
+  height: 18px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  background: var(--panel-2);
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.gap:hover button {
+  opacity: 1;
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* The row left behind while its clone follows the pointer. */
+.dragging {
+  opacity: 0.28;
+}
+
+/* The clone that follows the pointer. */
+.ghost {
+  position: fixed;
+  z-index: 50;
+  pointer-events: none;
+  margin: 0;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.55);
+  border-color: var(--accent);
+  opacity: 0.96;
+}
+
+/* The line showing where the drop will land. Absolutely positioned so it never
+   reflows the list mid-drag (which would make the drop target jitter). */
+.dropline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 3;
+  pointer-events: none;
+  background: var(--accent);
+  border-radius: 2px;
+  box-shadow: 0 0 8px var(--accent);
+}
+
+/* ---------- footer / status ---------- */
+
+.status {
+  margin-top: 14px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.status.error {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+.status.hide {
+  display: none;
+}
+
+.foot {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.foot .hint {
+  flex: 1;
+  min-width: 220px;
+}
+
+/* The Footballers snapshot has gone stale, or is missing entirely. */
+.foot .stale {
+  color: var(--meh);
+  font-weight: 600;
+}
+
+kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: 11px/1.4 ui-monospace, monospace;
+}
+
+/* ---------- empty / loading ---------- */
+
+.empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+
+.spin {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  margin-right: 7px;
+  vertical-align: -2px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 560px) {
+  /* Keep the FFB rank, its movement, the round, and your own drift on a phone.
+     Drop the team and the raw ADP as before, and the ADP movement with it - a delta
+     with its own column hidden is a number with nothing to anchor it. */
+  .row .team,
+  .row .adp,
+  .row .dadp {
+    display: none;
+  }
+
+  .tab {
+    padding: 9px 12px;
+  }
+}
+
+/* ---------- printable one-pager ---------- */
+
+/* Built on demand by "Print sheet"; never shown on screen. */
+.print-sheet {
+  display: none;
+}
+
+@media print {
+  @page {
+    size: letter portrait;
+    margin: 0.3in;
+  }
+
+  /* Print light, not the dark screen theme - it is a sheet of paper. */
+  body {
+    background: #fff;
+    color: #000;
+    padding: 0;
+    margin: 0;
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+
+  .wrap {
+    max-width: none;
+    margin: 0;
+  }
+
+  /* Everything except the sheet is screen furniture. */
+  .wrap > *:not(.print-sheet) {
+    display: none !important;
+  }
+
+  /* Font size is set inline by buildPrintSheet, fitted to the tallest column. */
+  .print-sheet {
+    display: block;
+    line-height: 1.14;
+  }
+
+  /* Three fixed columns: QB over TE, then RB, then WR. Fixed rather than flowing
+     newspaper columns so a position never splits across a column boundary. */
+  .print-cols {
+    display: flex;
+    align-items: flex-start;
+    gap: 11pt;
+  }
+
+  .print-col {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .print-pos {
+    font-size: 1.18em;
+    font-weight: 700;
+    letter-spacing: 0.4pt;
+    border-bottom: 0.75pt solid #000;
+    margin: 5pt 0 1.5pt;
+    padding-bottom: 1pt;
+    break-inside: avoid;
+  }
+
+  .print-col > .print-pos:first-child {
+    margin-top: 0;
+  }
+
+  .print-pos-n {
+    float: right;
+    font-weight: 400;
+    color: #555;
+  }
+
+  .print-tier {
+    margin: 2.5pt 0 1pt;
+    padding-bottom: 0.5pt;
+    border-bottom: 0.4pt dotted #999;
+    font-weight: 700;
+    font-size: 0.94em;
+    text-transform: uppercase;
+    letter-spacing: 0.3pt;
+    break-inside: avoid;
+  }
+
+  .print-row {
+    display: flex;
+    gap: 3pt;
+    break-inside: avoid;
+  }
+
+  .pr-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Rookie marker. */
+  .pr-r {
+    margin-left: 2pt;
+    font-size: 0.7em;
+    font-weight: 700;
+    vertical-align: super;
+    color: #666;
+  }
+
+  /* Depth-chart slot for RB/WR (RB1, WR3), plain position for QB/TE. */
+  .pr-slot {
+    flex: none;
+    width: 2.6em;
+    text-align: right;
+    color: #333;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .pr-team {
+    flex: none;
+    width: 2.4em;
+    text-align: right;
+    color: #555;
+  }
+
+  /* Sleeper ADP and the round it implies. */
+  .pr-adp {
+    flex: none;
+    width: 2.6em;
+    text-align: right;
+    color: #333;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .pr-rd {
+    flex: none;
+    width: 1.4em;
+    text-align: right;
+    color: #666;
+    font-variant-numeric: tabular-nums;
+  }
+}

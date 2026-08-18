@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Positional Tier Board</title>
+    <link rel="stylesheet" href="tiers.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>Positional Tier Board</h1>
+        <div class="sub" id="sub">Loading league...</div>
+      </header>
+
+      <!-- Position tabs; counts are filled in once the pool is built. -->
+      <nav class="tabs" id="tabs" role="tablist"></nav>
+
+      <div class="controls">
+        <label for="count">Show</label>
+        <select id="count">
+          <option value="24">24</option>
+          <option value="40">40</option>
+          <option value="60">60</option>
+        </select>
+
+        <button id="addBreak" type="button">+ Tier break</button>
+
+        <span class="spacer"></span>
+
+        <span class="saved" id="saved">Saved</span>
+        <button id="refresh" type="button" title="Check for a newly published rankings snapshot and re-pull Sleeper ADP. Nothing updates unless you press this.">Get latest rankings</button>
+        <button id="print" type="button">Print sheet</button>
+        <button id="reset" class="danger" type="button" title="Start over: erase every tier and every cached number, then pull the latest rankings, league and ADP from scratch. Use this at the start of a new season.">Reset</button>
+      </div>
+
+      <div class="status" id="status"><span class="spin"></span>Loading...</div>
+
+      <!--
+        Column labels. Same flex structure as a player row so the fixed-width
+        columns line up (.name is flex:1 and absorbs any difference).
+      -->
+      <div class="row head">
+        <span class="handle"></span>
+        <span class="idx">#</span>
+        <span class="name">Player</span>
+        <span class="team">Team</span>
+        <span class="dc" id="hdrDepth" title="Where he sits on his own NFL team's depth chart at this position - 1 is the starter. Shown for RB and WR.">DEPTH</span>
+        <span class="ffb" title="The Fantasy Footballers' rank at this position, full PPR - this is what sets the starting order">FFB</span>
+        <span class="dlt dffb" id="hdrDffb" title="Change in that Footballers rank since the last refresh. Up and green means he climbed. Moves of 1 or 2 places are not shown: ranks are a queue, so one player jumping ten spots shifts everyone he passed by one, and those are not real moves.">&Delta;FFB</span>
+        <span class="adp" title="Sleeper ADP, overall pick number - informational only, it does not affect the order">ADP</span>
+        <span class="dlt dadp" id="hdrDadp" title="Change in Sleeper ADP since the last refresh - up and green means he is being drafted earlier. Blank until you have refreshed at least once, because Sleeper publishes no ADP history to compare against.">&Delta;ADP</span>
+        <span class="rd" title="The draft round that ADP lands in, for your league's team count - informational only">RD</span>
+        <span class="drift" title="How far you have moved him from the Footballers' order">You</span>
+      </div>
+
+      <div class="board" id="board"></div>
+
+      <div class="foot">
+        <span class="hint">
+          Drag the <strong>&#10303;</strong> handle to reorder. Hover a gap to insert a tier
+          break. Focus a row and press <kbd>Alt</kbd>+<kbd>&uarr;</kbd> /
+          <kbd>&darr;</kbd> to nudge it. Changes save automatically.
+          <br />
+          <strong>FFB</strong> = Fantasy Footballers rank (sets the order).
+          <strong>ADP</strong> and <strong>RD</strong> are Sleeper, for reference only.
+          The <strong>&Delta;</strong> columns show what moved since the last rankings
+          update, hiding moves under 3 places. Nothing updates on its own -
+          <strong>Get latest rankings</strong> is the only thing that pulls new data.
+        </span>
+        <span id="adpInfo"></span>
+      </div>
+
+      <!--
+        Print-only view: every position's tiers at once, in columns, sized to fit
+        one side of one sheet. Built on demand by "Print sheet"; hidden on screen.
+      -->
+      <div class="print-sheet" id="printSheet" aria-hidden="true"></div>
+    </div>
+
+    <!--
+      The Fantasy Footballers snapshot. A script tag rather than a fetch() of a
+      .json file, because a double-clicked file:// page is not allowed to fetch
+      local files. Refresh it with: node dev/fetch-ffb.js
+    -->
+    <script src="ffb-rankings.js"></script>
+    <script src="tiers.js"></script>
+  </body>
+</html>

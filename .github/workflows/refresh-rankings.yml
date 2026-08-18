@@ -1,0 +1,65 @@
+# Refresh the Fantasy Footballers rankings snapshot and commit it.
+#
+# Why this is a workflow and not a button in the page: the Footballers send an
+# Access-Control-Allow-Origin locked to their own domain, so no browser - on
+# GitHub Pages, on localhost, or opened as a file - is allowed to read their
+# rankings pages. The scrape has to run outside a browser page, and a GitHub
+# runner is the one place that is always available for a published site.
+#
+# Manual only. There is no schedule on purpose: nothing should update behind your
+# back, because a movement arrow you never saw is a movement arrow you missed.
+# Run it from the Actions tab -> "Refresh rankings" -> "Run workflow".
+
+name: Refresh rankings
+
+on:
+  workflow_dispatch:
+
+# The job commits the regenerated snapshot back to the branch.
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # dev/fetch-ffb.js requires "playwright" and drives a real browser, because
+      # the scoring selector that switches the page to full PPR is client-side JS.
+      # Half PPR genuinely ranks players differently, so a plain HTML fetch would
+      # capture the wrong format.
+      - name: Install Playwright and Chromium
+        run: |
+          npm init -y
+          npm install playwright@latest
+          npx playwright install --with-deps chromium
+
+      - name: Scrape the rankings
+        run: node dev/fetch-ffb.js
+
+      # Commit only if something actually changed, so a no-op run does not create
+      # an empty commit and a pointless Pages redeploy.
+      - name: Commit the new snapshot
+        run: |
+          if git diff --quiet -- ffb-rankings.js; then
+            echo "The rankings are unchanged - nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ffb-rankings.js
+          git commit -m "Refresh Fantasy Footballers rankings snapshot"
+          git push
+
+      # Surfaces the movement in the run log, so you can see what changed without
+      # opening the board.
+      - name: Summarise what moved
+        run: node dev/summarise-movement.js
