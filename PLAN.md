@@ -294,6 +294,41 @@ Because it re-resolves the league, it is what rolls the tool onto a new season. 
 
 There is now no backup and no way to move a board between origins. Clearing browser data erases the tiers permanently. Flagged to the user, who chose to accept it and rebuild fresh on the published site; documented prominently in README.txt.
 
+## Follow-up 8: the board syncs to the repo, automatically (done)
+
+Asked for: read/write the board to a file on the Pages site, with **both** directions automatic - no Save button, no Load button - so tiers survive and follow between devices. Prompted by the tiers not appearing on the published site, which is the origin boundary from follow-up 7 biting again: `file://` and `https://…github.io` have separate `localStorage`, and with Export/Import gone there was nothing that could cross it.
+
+### What is actually possible
+
+GitHub Pages is a **read-only** static host. It answers GETs; there is no server-side code and no write endpoint, so no browser page can save a file back to it. Reading is fine and already used (that is how `Get latest rankings` re-reads `ffb-rankings.js`).
+
+Writing means the GitHub API, which means a token. A token **cannot ship in the repo** - it is public, so that would hand the world write access. So the token is pasted once per browser and lives only in that browser's `localStorage`. It is never committed and never sent anywhere but `api.github.com`. Sync is therefore opt-in per browser; with no token the board saves locally exactly as before and the footer says sync is off.
+
+### Design
+
+- **Storage**: `board.json` on a dedicated `boards` branch, created off the default branch on first use. A separate branch specifically so saving tiers never triggers a Pages rebuild and the board file never appears on the published site.
+- **Save**: automatic on every change. Local write is instant; the repo write is debounced `SYNC_DEBOUNCE_MS` (8s) so a burst of drags collapses into one commit instead of one commit per drag.
+- **Load**: automatic on open, and **not awaited** - a slow or unreachable GitHub must never delay the board rendering.
+- **Conflicts**: last-write-wins on a `updatedAt` stamp now carried in the board (and preserved by `sanitizeBoard`). On a 409/422 stale-sha response it re-reads: if the remote is newer it is adopted rather than clobbered, otherwise the push retries with the fresh sha. Right rule for one person on two devices.
+- **Bad token**: a 401/403 clears the stored token and stops. Retrying cannot help and would hammer the API on every keystroke.
+- **Repo identity** is read from the URL (`<owner>.github.io/<repo>/`), so a rename or fork needs no edit. A `file://` page has no repo in its URL and falls back to the published one - which is exactly what lets a locally-built board be pushed up for the Pages site to find.
+
+### Verified
+
+**174 headless + 155 browser checks pass.**
+
+The authenticated write path is the interesting part, because it cannot be exercised with a real token - that is the user's to hold and not something to ask for. So the tests stand up a **mock GitHub** by swapping `fetch` in the sandbox, which covers what would otherwise ship completely untested: branch bootstrap off the default branch, first push when the repo has nothing, a newer remote being adopted on load *without* pushing back over it, a newer local board being pushed up, a stale-sha conflict retrying and winning, a stale-sha conflict where the remote is newer being adopted instead, and a rejected token raising a clear error and dropping itself.
+
+Also covered: base64 round-trips non-ASCII (a tier named with an accent or an emoji would throw plain `btoa`), repo detection from both a `github.io` URL and the `file://` fallback, `updatedAt` surviving `sanitizeBoard`, and garbage from the repo being refused without disturbing the board on screen.
+
+### A trap in the test, not the product
+
+The first mock run failed with `["main","undefined"]` and then a base64 decode blowing up on binary garbage. Cause: `ghFetch` serialises the body before calling `fetch`, so the mock was reading `.ref` and `.content` off a JSON **string** - both silently `undefined`, one of which then got base64-encoded. The mock now parses the body, with a comment saying why. Worth remembering that a mock sitting one layer below the serialiser has to speak the serialised form.
+
+### Deliberate limitation
+
+The repo is public, so `board.json` is world-readable - tier rankings are not secret, and a leaguemate who finds the repo can read them. Raised with the user, who chose the public repo over an unlisted gist for the simpler setup. An unlisted gist or a private repo remains a small change.
+
 ## Re-running the checks
 
 ```

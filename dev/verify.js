@@ -15,12 +15,17 @@ const ROOT = path.join(__dirname, "..");
 const SRC = fs.readFileSync(path.join(ROOT, "tiers.js"), "utf8");
 const FFB_SRC = fs.readFileSync(path.join(ROOT, "ffb-rankings.js"), "utf8");
 
-/** In-memory localStorage stub. */
+/** In-memory localStorage stub. key()/length are needed by the Reset path, which
+ * clears every `tb_` key by scanning rather than by a hand-listed set. */
 const store = new Map();
 const localStorage = {
   getItem: (key) => (store.has(key) ? store.get(key) : null),
   setItem: (key, val) => store.set(key, String(val)),
   removeItem: (key) => store.delete(key),
+  key: (idx) => Array.from(store.keys())[idx] || null,
+  get length() {
+    return store.size;
+  },
 };
 
 /** Minimal element stub - enough for module-level wiring and render calls. */
@@ -97,6 +102,13 @@ const sandbox = {
   localStorage,
   document,
   window: windowStub,
+  // Sync reads the URL at startup to work out which repo to talk to, and a file://
+  // page is exactly the case that falls back to the published repo - so model that.
+  location: { protocol: "file:", hostname: "", pathname: "/index.html", origin: "file://" },
+  TextEncoder,
+  TextDecoder,
+  btoa: (str) => Buffer.from(str, "binary").toString("base64"),
+  atob: (str) => Buffer.from(str, "base64").toString("binary"),
 };
 sandbox.globalThis = sandbox;
 
@@ -113,7 +125,9 @@ const script = new vm.Script(
     " countUnrankedOnBoard, POSITIONS, DEFAULT_COUNTS, DEFAULT_COUNT," +
     " COUNTS_VERSION, MAX_COUNT, deltaCellHtml, DELTA_MIN, baselineAdpFor," +
     " captureAdpBaseline, loadAdpBaseline, countFfbMovers, ADP_PREV_KEY," +
-    " ADP_BASELINE_MIN_MS };"
+    " ADP_BASELINE_MIN_MS, detectRepo, toBase64, fromBase64, adoptRemoteBoard," +
+    " SYNC_BRANCH, SYNC_FILE, SYNC_FALLBACK_OWNER, SYNC_FALLBACK_REPO," +
+    " startSync, pushRemoteBoard, fetchRemoteBoard, ensureSyncBranch };"
 );
 script.runInContext(context);
 
@@ -520,6 +534,202 @@ function check(label, ok, detail) {
   check("a capture after the hour is allowed", tb.captureAdpBaseline() === true);
   check("the baseline then advances to the current value", tb.baselineAdpFor(samplePid) === 123.4);
   state.players[samplePid].adp = fakeAdp;
+
+  console.log("\n=== Sync: repo detection ===");
+  // A file:// page has no repo in its URL, so it falls back to the published one. That
+  // fallback is what lets a board built locally be pushed up for the Pages site.
+  const detected = tb.detectRepo();
+  check("a file:// page falls back to the published repo", detected && detected.owner === tb.SYNC_FALLBACK_OWNER && detected.repo === tb.SYNC_FALLBACK_REPO, JSON.stringify(detected));
+
+  sandbox.location.hostname = "someone.github.io";
+  sandbox.location.pathname = "/My-Board/";
+  sandbox.location.protocol = "https:";
+  const fromUrl = tb.detectRepo();
+  check("a github.io URL is read for owner and repo", fromUrl.owner === "someone" && fromUrl.repo === "My-Board", JSON.stringify(fromUrl));
+  check("so a rename or fork needs no code edit", fromUrl.owner !== tb.SYNC_FALLBACK_OWNER);
+
+  sandbox.location.hostname = "";
+  sandbox.location.pathname = "/index.html";
+  sandbox.location.protocol = "file:";
+
+  console.log("\n=== Sync: base64 round-trip ===");
+  // Tier names are free text, so the encoding has to survive accents and emoji. Plain
+  // btoa() throws on both.
+  const tricky = JSON.stringify({ label: "Estimé's tier - éü字 🏈" });
+  check("base64 round-trips non-ASCII", tb.fromBase64(tb.toBase64(tricky)) === tricky);
+  check("base64 output is ASCII-safe", /^[A-Za-z0-9+/=]+$/.test(tb.toBase64(tricky)));
+  check("wrapped base64 still decodes", tb.fromBase64(tb.toBase64(tricky).replace(/(.{8})/g, "$1\n")) === tricky);
+
+  console.log("\n=== Sync: adopting a board from the repo ===");
+  const localSnapshot = JSON.parse(JSON.stringify(state.board));
+  const incoming = JSON.parse(JSON.stringify(state.board));
+  incoming.updatedAt = "2030-01-01T00:00:00.000Z";
+  incoming.positions.RB.order = [{ t: "brk", label: "From my phone" }].concat(
+    incoming.positions.RB.order.filter((item) => item.t === "p").slice(0, 5)
+  );
+  check("a remote board is adopted", tb.adoptRemoteBoard(incoming) === true);
+  check("its tier name came through", state.board.positions.RB.order[0].label === "From my phone", state.board.positions.RB.order[0].label);
+  check("its row count came through", state.board.positions.RB.order.filter((item) => item.t === "p").length === 5);
+  check("adopting also writes the local copy", /From my phone/.test(String(store.get("tb_board_v1"))));
+  check("garbage from the repo is refused", tb.adoptRemoteBoard({ nonsense: true }) === false);
+  check("a refused board leaves the current one alone", state.board.positions.RB.order[0].label === "From my phone");
+
+  console.log("\n=== Sync: updatedAt survives a round-trip ===");
+  const stamped = tb.sanitizeBoard(Object.assign({}, localSnapshot, { updatedAt: "2029-05-05T05:05:05.000Z" }));
+  check("updatedAt is preserved", stamped.updatedAt === "2029-05-05T05:05:05.000Z", stamped.updatedAt);
+  check("a board with no stamp gets an empty one, not undefined", tb.sanitizeBoard(Object.assign({}, localSnapshot, { updatedAt: undefined })).updatedAt === "");
+  check("a non-string stamp is rejected", tb.sanitizeBoard(Object.assign({}, localSnapshot, { updatedAt: 12345 })).updatedAt === "");
+
+  // Put the real board back so later checks see the state they expect.
+  tb.adoptRemoteBoard(localSnapshot);
+
+  console.log("\n=== Sync: the authenticated write path, against a mock GitHub ===");
+  // The real write path needs a token, which is the user's to hold and not something to
+  // ask for. So stand up a fake GitHub instead: it exercises branch bootstrap, the first
+  // push, adopting a newer remote, sha-conflict resolution and a rejected token, none of
+  // which would otherwise be covered by anything at all.
+  const gh = {
+    defaultBranch: "main",
+    refs: { main: "sha-of-main" },
+    file: null, // { content: base64, sha }
+    calls: [],
+    failAuth: false,
+    writes: 0,
+  };
+  const realFetch = sandbox.fetch;
+
+  /**
+   * Build a fetch-like response.
+   *
+   * @param {number} status - HTTP status.
+   * @param {Object|null} body - JSON body.
+   * @returns {Object} a minimal Response.
+   */
+  function ghRes(status, body) {
+    return { status: status, ok: status >= 200 && status < 300, json: async () => body };
+  }
+
+  sandbox.fetch = async (url, options) => {
+    const target = String(url);
+    if (target.indexOf("https://api.github.com") !== 0) return realFetch(url, options);
+
+    const opts = options || {};
+    const route = target.slice("https://api.github.com".length);
+    gh.calls.push(opts.method || "GET");
+    // ghFetch serialises the body before sending, so the mock has to parse it back.
+    // Reading .ref off the raw string silently yields undefined, which is exactly the
+    // bug this comment exists to stop recurring.
+    const sent = opts.body ? JSON.parse(opts.body) : {};
+
+    if (gh.failAuth) return ghRes(401, { message: "Bad credentials" });
+    if (!/^Bearer .+/.test(String(opts.headers && opts.headers.Authorization))) {
+      return ghRes(401, { message: "Requires authentication" });
+    }
+
+    const repoBase = "/repos/" + tb.SYNC_FALLBACK_OWNER + "/" + tb.SYNC_FALLBACK_REPO;
+    if (route === repoBase) return ghRes(200, { default_branch: gh.defaultBranch });
+
+    let match = /\/git\/ref\/heads\/(.+)$/.exec(route);
+    if (match && (opts.method || "GET") === "GET") {
+      const sha = gh.refs[match[1]];
+      return sha ? ghRes(200, { object: { sha: sha } }) : ghRes(404, { message: "Not Found" });
+    }
+
+    if (route === repoBase + "/git/refs" && opts.method === "POST") {
+      const name = String(sent.ref).replace("refs/heads/", "");
+      gh.refs[name] = sent.sha;
+      return ghRes(201, {});
+    }
+
+    if (route.indexOf(repoBase + "/contents/" + tb.SYNC_FILE) === 0) {
+      if ((opts.method || "GET") === "GET") {
+        return gh.file
+          ? ghRes(200, { content: gh.file.content, sha: gh.file.sha })
+          : ghRes(404, { message: "Not Found" });
+      }
+      if (opts.method === "PUT") {
+        const expected = gh.file ? gh.file.sha : undefined;
+        if (expected !== sent.sha) {
+          return ghRes(409, { message: "sha does not match" });
+        }
+        gh.writes++;
+        gh.file = { content: sent.content, sha: "sha-" + gh.writes };
+        gh.lastBranch = sent.branch;
+        return ghRes(200, { content: { sha: gh.file.sha } });
+      }
+    }
+    return ghRes(404, { message: "unmocked " + route });
+  };
+
+  state.sync.owner = tb.SYNC_FALLBACK_OWNER;
+  state.sync.repo = tb.SYNC_FALLBACK_REPO;
+  state.sync.token = "fake-token-for-testing";
+  state.sync.sha = "";
+
+  // Nothing stored yet: it should create the branch and push this browser's board.
+  state.board.updatedAt = "2026-08-18T12:00:00.000Z";
+  await tb.startSync(false);
+  check("the boards branch was created on first use", !!gh.refs[tb.SYNC_BRANCH], JSON.stringify(Object.keys(gh.refs)));
+  check("the branch was cut from the default branch", gh.refs[tb.SYNC_BRANCH] === "sha-of-main");
+  check("the board was pushed when the repo had none", gh.writes === 1, "writes=" + gh.writes);
+  const stored = JSON.parse(tb.fromBase64(gh.file.content));
+  check("what was pushed is a real board", !!stored.positions && !!stored.positions.RB);
+  check("the pushed board carries a timestamp", !!stored.updatedAt, stored.updatedAt);
+  check("saves go to the boards branch, not the published one", tb.SYNC_BRANCH !== gh.defaultBranch);
+
+  // A newer board in the repo (another device) must win on load.
+  const fromPhone = JSON.parse(JSON.stringify(state.board));
+  fromPhone.updatedAt = "2031-01-01T00:00:00.000Z";
+  fromPhone.positions.RB.order = [{ t: "brk", label: "Phone tier" }].concat(
+    fromPhone.positions.RB.order.filter((item) => item.t === "p").slice(0, 3)
+  );
+  gh.file = { content: tb.toBase64(JSON.stringify(fromPhone)), sha: "sha-phone" };
+  const writesBefore = gh.writes;
+  await tb.startSync(false);
+  check("a newer board in the repo is adopted on load", state.board.positions.RB.order[0].label === "Phone tier", state.board.positions.RB.order[0].label);
+  check("adopting does not push back over it", gh.writes === writesBefore, "writes=" + gh.writes);
+
+  // An older board in the repo must be overwritten by this browser's newer one.
+  state.board.updatedAt = "2032-06-06T00:00:00.000Z";
+  await tb.startSync(false);
+  check("a newer local board is pushed up", gh.writes === writesBefore + 1, "writes=" + gh.writes);
+
+  // A stale sha means another device wrote since we looked. Older remote: retry and win.
+  gh.file = { content: gh.file.content, sha: "sha-moved-on" };
+  state.sync.sha = "sha-stale";
+  state.board.updatedAt = "2033-01-01T00:00:00.000Z";
+  const conflictOutcome = await tb.pushRemoteBoard();
+  check("a sha conflict is retried, not lost", conflictOutcome === "saved", conflictOutcome);
+  check("the retry used the freshly read sha", gh.file.sha !== "sha-moved-on");
+
+  // Same conflict, but the remote copy is the newer one: it must be adopted, not clobbered.
+  const newerRemote = JSON.parse(JSON.stringify(state.board));
+  newerRemote.updatedAt = "2040-01-01T00:00:00.000Z";
+  newerRemote.positions.RB.order = [{ t: "brk", label: "Newer elsewhere" }].concat(
+    newerRemote.positions.RB.order.filter((item) => item.t === "p").slice(0, 2)
+  );
+  gh.file = { content: tb.toBase64(JSON.stringify(newerRemote)), sha: "sha-newer" };
+  state.sync.sha = "sha-stale-again";
+  state.board.updatedAt = "2034-01-01T00:00:00.000Z";
+  const adoptOutcome = await tb.pushRemoteBoard();
+  check("a conflict with a newer remote adopts instead of overwriting", adoptOutcome === "adopted", adoptOutcome);
+  check("the newer remote board is what is on screen", state.board.positions.RB.order[0].label === "Newer elsewhere");
+
+  // A rejected token must stop, not retry forever.
+  gh.failAuth = true;
+  state.sync.token = "expired";
+  let authError = "";
+  try {
+    await tb.pushRemoteBoard();
+  } catch (err) {
+    authError = err.message;
+  }
+  check("a rejected token raises a clear error", /token was rejected/.test(authError), authError);
+  check("and the token is dropped so it stops retrying", state.sync.token === "", "token=" + state.sync.token);
+
+  gh.failAuth = false;
+  sandbox.fetch = realFetch;
+  tb.adoptRemoteBoard(localSnapshot);
 
   console.log("\n=== Empty-tier guard ===");
   const guard = [{ t: "brk", label: "" }, { t: "p", pid: "a" }, { t: "p", pid: "b" }];

@@ -129,6 +129,37 @@ const LEAGUE_TTL_MS = 24 * 60 * 60 * 1000;
 const BOARD_KEY = "tb_board_v1";
 const BOARD_VERSION = 1;
 
+/**
+ * GitHub sync. The board auto-saves to a file in the repo so it survives a cleared
+ * cache and follows you between laptop and phone.
+ *
+ * GitHub Pages is a read-only static host, so the write has to go through the GitHub
+ * API, which needs a token. A token cannot ship in a public repo - that would hand
+ * the world write access - so it is pasted in once per browser and kept only in
+ * localStorage. Without one the board still works, saving locally as before.
+ *
+ * Writes go to their own branch so a save never triggers a Pages rebuild, and the
+ * API base is a constant so the tests can point it at a mock instead.
+ */
+const GITHUB_API = "https://api.github.com";
+const SYNC_FILE = "board.json";
+const SYNC_BRANCH = "boards";
+const SYNC_TOKEN_KEY = "tb_gh_token_v1";
+
+/**
+ * Where to sync when the URL cannot say - i.e. the page was double-clicked rather than
+ * served from github.io. Only used as a fallback; on the published site the repo is
+ * read from the URL, so a rename or a fork needs no edit here.
+ */
+const SYNC_FALLBACK_OWNER = "peterbehl76";
+const SYNC_FALLBACK_REPO = "Fantasy-Football-Draft-Ranking";
+
+/**
+ * Saves are coalesced for this long. Every drag writing a commit would be absurd, so
+ * a burst of edits becomes one commit once you stop moving things.
+ */
+const SYNC_DEBOUNCE_MS = 8000;
+
 /** Positions this tool tiers. K and DEF are excluded on purpose. */
 const POSITIONS = ["QB", "RB", "WR", "TE"];
 
@@ -186,7 +217,9 @@ const state = {
   poolByPos: {}, // pos -> [pid] in blended order (the seed order)
   poolIndex: {}, // pos -> { pid -> index in poolByPos }
   activePos: "RB",
-  board: null, // { version, season, positions: { pos: { count, order: [] } } }
+  board: null, // { version, season, updatedAt, positions: { pos: { count, order: [] } } }
+  // GitHub sync: which repo, the token from this browser, and the file's last sha.
+  sync: { owner: "", repo: "", token: "", sha: "", timer: null },
 };
 
 /** Live drag operation, or null. */
@@ -885,6 +918,7 @@ function loadBoard() {
     version: BOARD_VERSION,
     season: state.targetSeason,
     countsVersion: COUNTS_VERSION, // a brand new board is already at the current depths
+    updatedAt: "",
     positions: {},
   };
 }
@@ -974,6 +1008,9 @@ function sanitizeBoard(raw) {
     countsVersion: Number(raw.countsVersion) || 0,
     // Which Footballers snapshot this board last absorbed, so a refresh is noticed.
     ffbStamp: typeof raw.ffbStamp === "string" ? raw.ffbStamp : "",
+    // When this board was last changed. Sync compares these to decide which of two
+    // devices' copies is the newer one.
+    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : "",
     positions: {},
   };
   for (const pos of POSITIONS) {
@@ -1005,8 +1042,12 @@ function sanitizeBoard(raw) {
  */
 function saveBoard() {
   try {
+    state.board.updatedAt = new Date().toISOString();
     localStorage.setItem(BOARD_KEY, JSON.stringify(state.board));
     flashSaved();
+    // Local write is instant; the repo write is debounced so a burst of drags becomes
+    // one commit rather than one per drag.
+    scheduleSync();
   } catch (err) {
     setStatus("Could not save - browser storage is full or blocked.", true);
   }
@@ -1093,6 +1134,351 @@ function moveEntry(from, to) {
 }
 
 // ---------------------------------------------------------------------------
+// GitHub sync - the board follows you between devices
+// ---------------------------------------------------------------------------
+
+/**
+ * Encode a string as base64 the way the GitHub contents API wants it. Goes via UTF-8
+ * bytes rather than btoa() directly, because a tier you named with an accent or an
+ * emoji would otherwise throw.
+ *
+ * @param {string} str - the text to encode.
+ * @returns {string} base64.
+ */
+function toBase64(str) {
+  const bytes = new TextEncoder().encode(str);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+/**
+ * Decode base64 from the GitHub contents API back to a UTF-8 string.
+ *
+ * @param {string} b64 - base64, possibly line-wrapped as GitHub returns it.
+ * @returns {string} the decoded text.
+ */
+function fromBase64(b64) {
+  const binary = atob(String(b64).replace(/\s/g, ""));
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+/**
+ * Work out which repo to sync with from the URL, so a rename or a fork needs no code
+ * change. Only meaningful on a github.io host; opened as a file there is no repo to
+ * infer and sync stays off.
+ *
+ * @returns {{owner: string, repo: string}|null} the repo, or null.
+ */
+function detectRepo() {
+  const match = /^([^.]+)\.github\.io$/.exec(location.hostname);
+  if (match) {
+    const segment = location.pathname.split("/").filter(Boolean)[0];
+    if (segment) return { owner: match[1], repo: segment };
+  }
+  // Opened as a file, or served locally: there is no repo in the URL to read, so fall
+  // back to the published one. This is what lets a board built at file:// be synced up
+  // to the repo and then picked up by the Pages site - the two origins have separate
+  // localStorage, so the repo file is the only thing they can both see.
+  if (SYNC_FALLBACK_OWNER && SYNC_FALLBACK_REPO) {
+    return { owner: SYNC_FALLBACK_OWNER, repo: SYNC_FALLBACK_REPO };
+  }
+  return null;
+}
+
+/**
+ * Call the GitHub API with the stored token.
+ *
+ * @param {string} route - path after the API base.
+ * @param {Object} [options] - fetch options.
+ * @returns {Promise<{status: number, body: any}>} the response.
+ */
+async function ghFetch(route, options) {
+  const opts = options || {};
+  const res = await fetch(GITHUB_API + route, {
+    method: opts.method || "GET",
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: "Bearer " + state.sync.token,
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  let body = null;
+  try {
+    body = await res.json();
+  } catch (err) {
+    body = null; // 204s and empty bodies are fine.
+  }
+  return { status: res.status, body: body };
+}
+
+/**
+ * Make sure the branch the board lives on exists, creating it off the default branch
+ * the first time. Board saves go to their own branch so that saving your tiers never
+ * rebuilds the published site.
+ *
+ * @returns {Promise<boolean>} true if the branch is available.
+ */
+async function ensureSyncBranch() {
+  const base = "/repos/" + state.sync.owner + "/" + state.sync.repo;
+  const existing = await ghFetch(base + "/git/ref/heads/" + SYNC_BRANCH);
+  if (existing.status === 200) return true;
+  if (existing.status !== 404) return false;
+
+  const repo = await ghFetch(base);
+  if (repo.status !== 200) return false;
+  const head = await ghFetch(base + "/git/ref/heads/" + repo.body.default_branch);
+  if (head.status !== 200) return false;
+
+  const created = await ghFetch(base + "/git/refs", {
+    method: "POST",
+    body: { ref: "refs/heads/" + SYNC_BRANCH, sha: head.body.object.sha },
+  });
+  return created.status === 201;
+}
+
+/**
+ * Read the board file from the repo.
+ *
+ * @returns {Promise<{board: Object, sha: string}|null>} the stored board, or null.
+ */
+async function fetchRemoteBoard() {
+  const route =
+    "/repos/" + state.sync.owner + "/" + state.sync.repo + "/contents/" + SYNC_FILE +
+    "?ref=" + SYNC_BRANCH;
+  const res = await ghFetch(route);
+  if (res.status === 404) return null; // nothing saved yet
+  if (res.status !== 200 || !res.body || !res.body.content) throw new Error("HTTP " + res.status);
+  const parsed = JSON.parse(fromBase64(res.body.content));
+  return { board: parsed, sha: res.body.sha };
+}
+
+/**
+ * Write the current board to the repo.
+ *
+ * On a sha conflict the remote has moved since we last looked, which means another
+ * device saved. Rather than blindly overwrite, the newer of the two by updatedAt wins.
+ *
+ * @returns {Promise<string>} a short outcome: "saved", "adopted", or "skipped".
+ */
+async function pushRemoteBoard() {
+  state.board.updatedAt = new Date().toISOString();
+  const payload = toBase64(JSON.stringify(state.board, null, 2));
+  const route = "/repos/" + state.sync.owner + "/" + state.sync.repo + "/contents/" + SYNC_FILE;
+
+  const body = {
+    message: "Update tier board",
+    content: payload,
+    branch: SYNC_BRANCH,
+  };
+  if (state.sync.sha) body.sha = state.sync.sha;
+
+  let res = await ghFetch(route, { method: "PUT", body: body });
+
+  // 409/422 means our sha is stale - somebody else wrote since we read.
+  if (res.status === 409 || res.status === 422) {
+    const remote = await fetchRemoteBoard();
+    if (remote) {
+      const mine = Date.parse(state.board.updatedAt || 0) || 0;
+      const theirs = Date.parse(remote.board.updatedAt || 0) || 0;
+      state.sync.sha = remote.sha;
+      if (theirs > mine) {
+        adoptRemoteBoard(remote.board);
+        return "adopted";
+      }
+      body.sha = remote.sha;
+      res = await ghFetch(route, { method: "PUT", body: body });
+    }
+  }
+
+  if (res.status === 401 || res.status === 403) {
+    // Stop retrying on a bad or expired token; retrying cannot help and would just
+    // hammer the API on every keystroke.
+    state.sync.token = "";
+    throw new Error("the token was rejected (" + res.status + ") - paste a new one");
+  }
+  if (res.status !== 200 && res.status !== 201) throw new Error("HTTP " + res.status);
+
+  state.sync.sha = res.body && res.body.content ? res.body.content.sha : state.sync.sha;
+  return "saved";
+}
+
+/**
+ * Replace the in-memory board with one loaded from the repo, and redraw.
+ *
+ * @param {Object} raw - a board object from the sync file.
+ * @returns {boolean} true if it was usable and adopted.
+ */
+function adoptRemoteBoard(raw) {
+  const clean = sanitizeBoard(raw);
+  if (!clean) return false;
+  state.board = clean;
+  if (state.positions.indexOf(state.activePos) === -1) state.activePos = state.positions[0];
+  try {
+    localStorage.setItem(BOARD_KEY, JSON.stringify(state.board));
+  } catch (err) {
+    // Local copy is a convenience; the repo copy is the one that matters here.
+  }
+  renderCountOptions(state.activePos);
+  render();
+  return true;
+}
+
+/**
+ * Queue a save. Called on every board change, but only the last one in a burst
+ * actually writes.
+ */
+function scheduleSync() {
+  if (!state.sync.token || !state.sync.owner) return;
+  if (state.sync.timer) clearTimeout(state.sync.timer);
+  setSyncStatus("saving soon");
+  state.sync.timer = setTimeout(async () => {
+    state.sync.timer = null;
+    try {
+      setSyncStatus("saving");
+      const outcome = await pushRemoteBoard();
+      setSyncStatus(outcome === "adopted" ? "loaded a newer board" : "saved");
+    } catch (err) {
+      setSyncStatus("save failed: " + err.message, true);
+    }
+  }, SYNC_DEBOUNCE_MS);
+}
+
+/**
+ * Show the sync state in the footer.
+ *
+ * @param {string} text - what just happened.
+ * @param {boolean} [isError] - style it as a problem.
+ */
+function setSyncStatus(text, isError) {
+  if (!syncEl) return;
+  const configured = !!(state.sync.token && state.sync.owner);
+  if (!state.sync.owner) {
+    syncEl.textContent = "";
+    return;
+  }
+  syncEl.textContent = configured ? "Sync: " + text : "Sync off - click to set up";
+  syncEl.className = "sync" + (isError ? " bad" : configured ? " on" : "");
+  syncEl.title = configured
+    ? "Your board saves to " + SYNC_FILE + " on the " + SYNC_BRANCH + " branch of " +
+      state.sync.owner + "/" + state.sync.repo + ". Click to replace or remove the token."
+    : "Click to paste a GitHub token, so your board saves to the repo and follows you " +
+      "between devices. Without it the board saves in this browser only.";
+}
+
+/**
+ * Prompt for the token. Deliberately the only manual part of sync: loading and saving
+ * are both automatic once this is set.
+ */
+function promptForToken() {
+  if (!state.sync.owner) return;
+  const current = state.sync.token;
+  const entered = window.prompt(
+    "Paste a GitHub fine-grained token with Contents: Read and write on " +
+    state.sync.owner + "/" + state.sync.repo + ".\n\n" +
+    "It is stored only in this browser, never in the repo. Leave blank and press OK to " +
+    "turn sync off and clear the stored token.",
+    current ? "" : ""
+  );
+  if (entered === null) return; // cancelled
+
+  const token = entered.trim();
+  if (!token) {
+    state.sync.token = "";
+    try {
+      localStorage.removeItem(SYNC_TOKEN_KEY);
+    } catch (err) {
+      // Nothing to do.
+    }
+    setSyncStatus("off");
+    setStatus("Sync turned off. Your board still saves in this browser.");
+    return;
+  }
+
+  state.sync.token = token;
+  try {
+    localStorage.setItem(SYNC_TOKEN_KEY, token);
+  } catch (err) {
+    setStatus("Could not store the token - browser storage is blocked.", true);
+    return;
+  }
+  startSync(true);
+}
+
+/**
+ * Bring sync up: check the branch, then take whichever board is newer - the one in the
+ * repo or the one in this browser. Runs on every load, with no button, so opening the
+ * board on a second device just shows your work.
+ *
+ * @param {boolean} [announce] - report the outcome in the status line.
+ */
+async function startSync(announce) {
+  if (!state.sync.token || !state.sync.owner) {
+    setSyncStatus("off");
+    return;
+  }
+
+  setSyncStatus("checking");
+  try {
+    const ready = await ensureSyncBranch();
+    if (!ready) throw new Error("could not reach the " + SYNC_BRANCH + " branch");
+
+    const remote = await fetchRemoteBoard();
+    if (!remote) {
+      // Nothing stored yet, so this browser's board becomes the stored one.
+      await pushRemoteBoard();
+      setSyncStatus("saved");
+      if (announce) setStatus("Sync on. Your board is now saved to the repo.");
+      return;
+    }
+
+    state.sync.sha = remote.sha;
+    const mine = Date.parse(state.board.updatedAt || 0) || 0;
+    const theirs = Date.parse(remote.board.updatedAt || 0) || 0;
+
+    if (theirs > mine && adoptRemoteBoard(remote.board)) {
+      setSyncStatus("loaded");
+      setStatus(
+        "Loaded the board you saved " + timeAgo(theirs) + (announce ? "" : "") +
+        ". It was newer than the copy in this browser."
+      );
+      return;
+    }
+
+    if (mine > theirs) {
+      await pushRemoteBoard();
+      setSyncStatus("saved");
+      if (announce) setStatus("Sync on. This browser's board was newer, so it was saved up.");
+      return;
+    }
+
+    setSyncStatus("up to date");
+    if (announce) setStatus("Sync on. Your board matches the copy in the repo.");
+  } catch (err) {
+    setSyncStatus(err.message, true);
+    if (announce) setStatus("Sync could not start: " + err.message, true);
+  }
+}
+
+/**
+ * Read the stored token and work out which repo we are on.
+ */
+function initSync() {
+  const repo = detectRepo();
+  state.sync.owner = repo ? repo.owner : "";
+  state.sync.repo = repo ? repo.repo : "";
+  try {
+    state.sync.token = localStorage.getItem(SYNC_TOKEN_KEY) || "";
+  } catch (err) {
+    state.sync.token = "";
+  }
+  if (syncEl) syncEl.addEventListener("click", promptForToken);
+  setSyncStatus(state.sync.token ? "checking" : "off");
+}
+
+// ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
 
@@ -1104,6 +1490,7 @@ const savedEl = document.getElementById("saved");
 const countEl = document.getElementById("count");
 const adpInfoEl = document.getElementById("adpInfo");
 const depthHeadEl = document.getElementById("hdrDepth");
+const syncEl = document.getElementById("syncInfo");
 
 /**
  * Escape a string for safe interpolation into HTML.
@@ -2042,6 +2429,7 @@ async function resetAll() {
 async function init() {
   setupBoardHandlers();
   setupControls();
+  initSync();
 
   try {
     await loadAll();
@@ -2070,6 +2458,11 @@ async function init() {
   renderCountOptions(state.activePos);
   renderMeta();
   render();
+
+  // Automatic, no button: if this browser has a token, take whichever board is newer -
+  // the one here or the one in the repo. Deliberately not awaited, so a slow or
+  // unreachable GitHub never delays the board appearing.
+  startSync(false);
 
   if (added.length) {
     const summary = added

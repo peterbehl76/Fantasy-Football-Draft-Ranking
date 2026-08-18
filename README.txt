@@ -33,7 +33,34 @@ Your tiers are saved in the browser's localStorage, which is scoped per ORIGIN. 
   - Tiers made by double-clicking index.html stay under file://.
   - Those two are separate stores. The same tiers will NOT appear in both, and clearing your browser data erases them.
 
-There is no export or import, by choice, so there is no backup and no way to move a board between the two. Pick one place - the published page is the sensible one - and build your tiers there.
+There is no export or import, by choice. Turning on sync (below) is what gives you a backup and lets one board follow you between the published site, a local copy, and your phone. Without sync, pick one place - the published page is the sensible one - and build your tiers there.
+
+Syncing your board between devices
+----------------------------------
+With sync on, your board is saved as board.json in the repo, automatically. Both directions are automatic - there is no Save button and no Load button:
+
+  - Every change saves. Local storage is written instantly; the repo write is held back about 8 seconds so a burst of drags becomes one commit instead of one per drag.
+  - Opening the board loads. If the copy in the repo is newer than the copy in this browser - because you were working on another device - it is loaded and the status line says so. If this browser's is newer, it gets saved up instead. Newest wins, compared on a timestamp stored in the board.
+
+Setting it up takes one paste per browser. Click the small "Sync off - click to set up" text in the footer and paste a GitHub token.
+
+The token has to exist because GitHub Pages is a read-only static host: the only way a browser can write to your repo is the GitHub API, which requires authentication. It CANNOT be shipped in the code - the repo is public, so a token committed there would give the world write access to your repo. So it is pasted in per browser and kept in that browser's localStorage only. It is never committed, never sent anywhere except api.github.com, and never logged.
+
+Make it a fine-grained token, scoped as tightly as possible:
+
+  GitHub -> Settings -> Developer settings -> Personal access tokens -> Fine-grained tokens
+  Repository access : Only select repositories -> this repo
+  Permissions       : Repository permissions -> Contents -> Read and write
+  Expiration        : your call; when it expires, sync says the token was rejected and you paste a new one
+
+That is the whole scope: read and write files in this one repo. Nothing else, no other repo, no account access.
+
+Two things worth knowing:
+
+  - Saves go to a separate branch (boards), NOT the branch Pages serves. So saving your tiers never rebuilds the site, and your board file never appears on the published page.
+  - The repo is public, so board.json is publicly readable by anyone who finds it. Your tier rankings are not secret. If that matters - leaguemates, say - the fix is an unlisted gist or a private repo instead, which is a small change.
+
+If you never set up sync, nothing about the board changes: it saves locally exactly as before, and the footer just says sync is off.
 
 Building your board
 -------------------
@@ -173,8 +200,9 @@ All storage keys are prefixed "tb_" so this tool and the keeper Draft Helper can
   tb_adp_v2_*      - Sleeper ADP
   tb_adp_prev_v1   - the ADP baseline the dADP column measures against
   tb_board_v1      - your tiers and ordering
+  tb_gh_token_v1   - your GitHub token, if you turned sync on (this browser only)
 
-Reset clears everything under the tb_ prefix, so it cannot leave a stale key behind to poison the fresh state.
+Reset clears everything under the tb_ prefix, so it cannot leave a stale key behind to poison the fresh state - including the sync token, so you will need to paste that again after a reset.
 
 New seasons (no yearly edit needed)
 -----------------------------------

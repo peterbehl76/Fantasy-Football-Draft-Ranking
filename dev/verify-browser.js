@@ -411,6 +411,12 @@ async function waitForBoard(page) {
   check("Reset is styled as destructive", /danger/.test(String(await page.locator("#reset").getAttribute("class"))));
   check("Reset explains itself on hover", /new season/.test(String(await page.locator("#reset").getAttribute("title"))));
 
+  // Sync is opt-in per browser, so with no token it must say so rather than looking broken.
+  const syncText = (await page.locator("#syncInfo").textContent()).trim();
+  check("sync reports itself as off until set up", /Sync off/.test(syncText), syncText);
+  check("sync says how to turn it on", /click to set up/i.test(syncText));
+  check("sync explains the trade-off on hover", /saves in this browser only/.test(String(await page.locator("#syncInfo").getAttribute("title"))));
+
   console.log("\n=== Printable one-pager (at the default depths) ===");
   // The real case: the depths the tool ships with.
   const DEFAULTS = { QB: 30, RB: 60, WR: 80, TE: 30 };
